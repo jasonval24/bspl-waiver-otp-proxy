@@ -12,7 +12,7 @@ const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID || "SR6TyBbdGg6FF6mVEJX4";
 const WAIVER_ACK_TAG = process.env.WAIVER_ACK_TAG || "waiver-ack";
 const WAIVER_THANKS_SMS =
   process.env.WAIVER_THANKS_SMS ||
-  "Thanks for completing your waiver at Blue Shore Pedal Lounge. See you on the water! 🤙";
+  "Thanks for completing your waiver at Blue Shore Pedal Lounge.";
 
 const ALLOWED = (
   process.env.ALLOWED_ORIGINS ||
