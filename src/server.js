@@ -10,6 +10,9 @@ const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
 const GHL_TOKEN = process.env.GHL_PRIVATE_INTEGRATION_TOKEN;
 const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID || "SR6TyBbdGg6FF6mVEJX4";
 const WAIVER_ACK_TAG = process.env.WAIVER_ACK_TAG || "waiver-ack";
+const WAIVER_THANKS_SMS =
+  process.env.WAIVER_THANKS_SMS ||
+  "Thanks for completing your waiver at Blue Shore Pedal Lounge. See you on the water! 🤙";
 
 const ALLOWED = (
   process.env.ALLOWED_ORIGINS ||
@@ -72,6 +75,17 @@ function splitName(fullName) {
   return { firstName: parts[0], lastName: parts.slice(1).join(" ") };
 }
 
+function ghlHeaders(extra = {}) {
+  return {
+    Authorization: `Bearer ${GHL_TOKEN}`,
+    Version: "2021-07-28",
+    "Content-Type": "application/json",
+    Accept: "application/json",
+    "User-Agent": "Mozilla/5.0 BSPL-Waiver-OTP/1.1",
+    ...extra,
+  };
+}
+
 async function twilioForm(path, fields) {
   if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) {
     const err = new Error("Server misconfigured");
@@ -115,30 +129,16 @@ async function upsertGhlContact({ fullName, phone }) {
     source: "Quick Waiver",
     tags: [WAIVER_ACK_TAG],
   };
-  // Prefer upsert
   let res = await fetch("https://services.leadconnectorhq.com/contacts/upsert", {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${GHL_TOKEN}`,
-      Version: "2021-07-28",
-      "Content-Type": "application/json",
-      Accept: "application/json",
-      "User-Agent": "Mozilla/5.0 BSPL-Waiver-OTP/1.0",
-    },
+    headers: ghlHeaders(),
     body: JSON.stringify(payload),
   });
   let data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    // fallback create
     res = await fetch("https://services.leadconnectorhq.com/contacts/", {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${GHL_TOKEN}`,
-        Version: "2021-07-28",
-        "Content-Type": "application/json",
-        Accept: "application/json",
-        "User-Agent": "Mozilla/5.0 BSPL-Waiver-OTP/1.0",
-      },
+      headers: ghlHeaders(),
       body: JSON.stringify(payload),
     });
     data = await res.json().catch(() => ({}));
@@ -149,20 +149,14 @@ async function upsertGhlContact({ fullName, phone }) {
     err.detail = data;
     throw err;
   }
-  // Best-effort note
   const contactId = data?.contact?.id || data?.id;
   if (contactId) {
     try {
       await fetch(`https://services.leadconnectorhq.com/contacts/${contactId}/notes`, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${GHL_TOKEN}`,
-          Version: "2021-07-28",
-          "Content-Type": "application/json",
-          "User-Agent": "Mozilla/5.0 BSPL-Waiver-OTP/1.0",
-        },
+        headers: ghlHeaders(),
         body: JSON.stringify({
-          body: `Quick Waiver submission ${nowIso} (America/Chicago). Source: temp/OTP page. Version board-ack-v1.`,
+          body: `Quick Waiver submission ${nowIso} (America/Chicago). Source: OTP page. Version board-ack-v1.`,
         }),
       });
     } catch (_) {}
@@ -170,11 +164,57 @@ async function upsertGhlContact({ fullName, phone }) {
   return { contactId, raw: data };
 }
 
+/**
+ * Send thank-you SMS via GHL Conversations so a thread appears under Conversations.
+ * GHL delivers through the location LC number (+13616008508). Best-effort: never
+ * fail the approved OTP response if SMS fails.
+ */
+async function sendWaiverThanksSms(contactId) {
+  if (!GHL_TOKEN || !contactId) {
+    return { ok: false, skipped: true, reason: "missing token or contactId" };
+  }
+  const payload = {
+    type: "SMS",
+    contactId,
+    message: WAIVER_THANKS_SMS,
+  };
+  try {
+    const res = await fetch("https://services.leadconnectorhq.com/conversations/messages", {
+      method: "POST",
+      headers: ghlHeaders(),
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      console.error("waiver thanks SMS failed", res.status, JSON.stringify(data).slice(0, 500));
+      return { ok: false, status: res.status, data };
+    }
+    console.log(
+      "waiver thanks SMS sent",
+      JSON.stringify({
+        conversationId: data.conversationId || null,
+        messageId: data.messageId || null,
+        contactId,
+      })
+    );
+    return {
+      ok: true,
+      conversationId: data.conversationId || null,
+      messageId: data.messageId || null,
+      data,
+    };
+  } catch (e) {
+    console.error("waiver thanks SMS error", e?.message || e);
+    return { ok: false, error: String(e?.message || e) };
+  }
+}
+
 app.get("/health", (_req, res) => {
   res.json({
     ok: true,
     twilio: Boolean(TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN),
     ghl: Boolean(GHL_TOKEN),
+    thanksSms: Boolean(GHL_TOKEN),
     verifyService: VERIFY_SERVICE_SID,
   });
 });
@@ -214,7 +254,14 @@ app.post("/check", async (req, res) => {
     const status = tw.data?.status || "";
     if (status === "approved") {
       const ghl = await upsertGhlContact({ fullName, phone });
-      return res.json({ status: "approved", contactId: ghl.contactId || null });
+      const sms = await sendWaiverThanksSms(ghl.contactId);
+      return res.json({
+        status: "approved",
+        contactId: ghl.contactId || null,
+        conversationId: sms.conversationId || null,
+        messageId: sms.messageId || null,
+        smsSent: Boolean(sms.ok),
+      });
     }
     if (tw.ok || status === "pending" || status === "canceled") {
       return res.json({ status: "pending" });
