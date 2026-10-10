@@ -4,6 +4,7 @@ Secure Twilio Verify + GoHighLevel upsert for Blue Shore Pedal Lounge Quick Waiv
 
 - `POST /send` `{ "phone": "+1..." }`
 - `POST /check` `{ "phone": "+1...", "code": "123456", "fullName": "..." }` — on approved, upserts GHL contact with tag `waiver-ack`, then sends the confirmation SMS via GHL Conversations (361-600-8508)
+- Optional Find-checkout opt-out on `/check` only: `{ "skipConfirmationSms": true }` or `{ "source": "find-checkout" }` skips both the thank-you SMS and the delayed trolley-tracker SMS. Vibe does not send these fields, so default behavior is unchanged. GHL waiver-ack upsert still runs.
 - Secrets: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `GHL_PRIVATE_INTEGRATION_TOKEN`
 
 ## Follow-up trolley tracker SMS
