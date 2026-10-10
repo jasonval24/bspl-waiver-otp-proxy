@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import { shouldSkipConfirmationSms } from "./confirmation-sms.js";
 import { scheduleWaiverTrackerSms } from "./waiver-tracker-sms.js";
 
 const app = express();
@@ -270,14 +271,19 @@ app.post("/check", async (req, res) => {
     const status = tw.data?.status || "";
     if (status === "approved") {
       const ghl = await upsertGhlContact({ fullName, phone });
-      const sms = await sendWaiverThanksSms(ghl.contactId);
-      if (sms.ok) queueWaiverTrackerSms(ghl.contactId);
+      const skipSms = shouldSkipConfirmationSms(req.body);
+      let sms = { ok: false, conversationId: null, messageId: null };
+      if (!skipSms) {
+        sms = await sendWaiverThanksSms(ghl.contactId);
+        if (sms.ok) queueWaiverTrackerSms(ghl.contactId);
+      }
       return res.json({
         status: "approved",
         contactId: ghl.contactId || null,
         conversationId: sms.conversationId || null,
         messageId: sms.messageId || null,
         smsSent: Boolean(sms.ok),
+        confirmationSmsSkipped: skipSms || undefined,
       });
     }
     if (tw.ok || status === "pending" || status === "canceled") {
