@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import { scheduleWaiverTrackerSms } from "./waiver-tracker-sms.js";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -165,18 +166,18 @@ async function upsertGhlContact({ fullName, phone }) {
 }
 
 /**
- * Send thank-you SMS via GHL Conversations so a thread appears under Conversations.
+ * Send SMS via GHL Conversations so a thread appears under Conversations.
  * GHL delivers through the location LC number (+13616008508). Best-effort: never
  * fail the approved OTP response if SMS fails.
  */
-async function sendWaiverThanksSms(contactId) {
+async function sendGhlConversationSms(contactId, message, logLabel) {
   if (!GHL_TOKEN || !contactId) {
     return { ok: false, skipped: true, reason: "missing token or contactId" };
   }
   const payload = {
     type: "SMS",
     contactId,
-    message: WAIVER_THANKS_SMS,
+    message,
   };
   try {
     const res = await fetch("https://services.leadconnectorhq.com/conversations/messages", {
@@ -186,11 +187,11 @@ async function sendWaiverThanksSms(contactId) {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      console.error("waiver thanks SMS failed", res.status, JSON.stringify(data).slice(0, 500));
+      console.error(`${logLabel} failed`, res.status, JSON.stringify(data).slice(0, 500));
       return { ok: false, status: res.status, data };
     }
     console.log(
-      "waiver thanks SMS sent",
+      `${logLabel} sent`,
       JSON.stringify({
         conversationId: data.conversationId || null,
         messageId: data.messageId || null,
@@ -204,8 +205,23 @@ async function sendWaiverThanksSms(contactId) {
       data,
     };
   } catch (e) {
-    console.error("waiver thanks SMS error", e?.message || e);
+    console.error(`${logLabel} error`, e?.message || e);
     return { ok: false, error: String(e?.message || e) };
+  }
+}
+
+async function sendWaiverThanksSms(contactId) {
+  return sendGhlConversationSms(contactId, WAIVER_THANKS_SMS, "waiver thanks SMS");
+}
+
+function queueWaiverTrackerSms(contactId) {
+  try {
+    scheduleWaiverTrackerSms({
+      contactId,
+      sendSms: (id, message) => sendGhlConversationSms(id, message, "waiver tracker SMS"),
+    });
+  } catch (e) {
+    console.error("waiver tracker SMS schedule error", e?.message || e);
   }
 }
 
@@ -255,6 +271,7 @@ app.post("/check", async (req, res) => {
     if (status === "approved") {
       const ghl = await upsertGhlContact({ fullName, phone });
       const sms = await sendWaiverThanksSms(ghl.contactId);
+      if (sms.ok) queueWaiverTrackerSms(ghl.contactId);
       return res.json({
         status: "approved",
         contactId: ghl.contactId || null,
